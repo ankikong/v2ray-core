@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sync"
 	"time"
+	"regexp"
 
 	"golang.org/x/net/http2"
 
@@ -164,6 +165,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	return nil
 }
 
+var exp = regexp.MustCompile("Host[^\n]+\n")
 // setUpHTTPTunnel will create a socket tunnel via HTTP CONNECT method
 func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, user *protocol.MemoryUser, dialer internet.Dialer, firstPayload []byte, writeFirstPayloadInH1 bool,
 ) (net.Conn, buf.MultiBuffer, error) {
@@ -171,8 +173,9 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 		Method: http.MethodConnect,
 		URL:    &url.URL{Host: target},
 		Header: make(http.Header),
-		Host:   target,
+		Host:   "",
 	}
+	req.Header.Add("User-Agent", "")
 
 	if user != nil && user.Account != nil {
 		account := user.Account.(*Account)
@@ -184,11 +187,18 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 		req.Header.Set("Proxy-Connection", "Keep-Alive")
 
 		if !writeFirstPayloadInH1 {
-			err := req.Write(rawConn)
-			if err != nil {
-				rawConn.Close()
-				return nil, nil, err
-			}
+			buffer := bytes.NewBuffer(nil)
+                        err := req.Write(buffer)
+                        if err != nil {
+                                rawConn.Close()
+                                return nil, nil, err
+                        }
+			data := exp.ReplaceAll(buffer.Bytes(), []byte(nil))
+			_, err = rawConn.Write(data)
+                        if err != nil {
+                                rawConn.Close()
+                                return nil, nil, err
+                        }
 		} else {
 			buffer := bytes.NewBuffer(nil)
 			err := req.Write(buffer)
@@ -196,6 +206,9 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 				rawConn.Close()
 				return nil, nil, err
 			}
+			data := exp.ReplaceAll(buffer.Bytes(), []byte(nil))
+			buffer.Reset()
+			buffer.Write(data)
 			_, err = io.Copy(buffer, bytes.NewReader(firstPayload))
 			if err != nil {
 				rawConn.Close()
